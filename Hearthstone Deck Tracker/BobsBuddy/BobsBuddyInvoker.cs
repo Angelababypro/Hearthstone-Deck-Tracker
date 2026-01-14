@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
 using HearthDb.Enums;
 using Hearthstone_Deck_Tracker.Controls.Overlay;
@@ -117,6 +118,50 @@ namespace Hearthstone_Deck_Tracker.BobsBuddy
 				Core.Overlay.ChinaModuleVM.BobsBuddyState = value;
 				DebugLog($"New State: {value}");
 			}
+		}
+
+		internal static async Task<SimResult?> SimulateFromCurrentAsync(SimOptions options, CancellationToken ct)
+		{
+			var invoker = CreateCustomInvoker();
+			var input = invoker.BuildInputFromCurrentGameState();
+			if(input == null)
+				return null;
+
+			var output = await RunCustomSimulationAsync(input, options, ct);
+			return output == null ? null : new SimResult
+			{
+				Win = output.winRate,
+				Tie = output.tieRate,
+				Lose = output.lossRate,
+				Simulations = output.simulationCount
+			};
+		}
+
+		internal static async Task<SimResult?> SimulateCustomAsync(CustomBattleSnapshot snapshot, SimOptions options, CancellationToken ct)
+		{
+			var input = CustomSnapshotMapper.ToInput(snapshot);
+			if(input == null)
+				return null;
+
+			var output = await RunCustomSimulationAsync(input, options, ct);
+			return output == null ? null : new SimResult
+			{
+				Win = output.winRate,
+				Tie = output.tieRate,
+				Lose = output.lossRate,
+				Simulations = output.simulationCount
+			};
+		}
+
+		private static BobsBuddyInvoker CreateCustomInvoker()
+		{
+			return new BobsBuddyInvoker("custom");
+		}
+
+		private Input? BuildInputFromCurrentGameState()
+		{
+			SnapshotBoardState(_game.GetTurnNumber());
+			return _input;
 		}
 
 		public bool ShouldRun()
@@ -977,29 +1022,7 @@ namespace Hearthstone_Deck_Tracker.BobsBuddy
 
 				var start = DateTime.Now;
 
-				var timeAlloted = MaxTime;
-
-				bool IsLeapfroggerCombo(IEnumerable<Minion>? side)
-				{
-					if(side == null)
-						return false;
-					var list = side.ToList();
-					return list.Count() >= 3 && list.Any(x => x.CardID == NonCollectible.Neutral.Leapfrogger);
-				}
-
-				if(
-					IsLeapfroggerCombo(_input.Player.Side) ||
-					IsLeapfroggerCombo(_input.PlayerTeammate?.Side) ||
-					IsLeapfroggerCombo(_input.Opponent.Side) ||
-					IsLeapfroggerCombo(_input.OpponentTeammate?.Side)
-				)
-				{
-					timeAlloted = MaxTimeForLeapfrogger;
-				}
-				else if(_input.Player.Side.Count >= 6 || _input.Opponent.Side.Count >= 6)
-				{
-					timeAlloted = MaxTimeForComplexBoards;
-				}
+				var timeAlloted = ResolveDefaultTimeAlloted(_input);
 				Output = await new SimulationRunner().SimulateMultiThreaded(_input, Iterations, ThreadCount, timeAlloted);
 				DoNotReport = false;
 
@@ -1040,6 +1063,68 @@ namespace Hearthstone_Deck_Tracker.BobsBuddy
 				Output = null;
 				return null;
 			}
+		}
+
+		private static async Task<Output?> RunCustomSimulationAsync(Input input, SimOptions options, CancellationToken ct)
+		{
+			try
+			{
+				ct.ThrowIfCancellationRequested();
+				var iterations = ResolveIterations(options);
+				var threadCount = ResolveThreadCount(options);
+				var timeAlloted = options.TimeoutMs.HasValue && options.TimeoutMs.Value > 0
+					? options.TimeoutMs.Value
+					: ResolveDefaultTimeAlloted(input);
+				return await new SimulationRunner().SimulateMultiThreaded(input, iterations, threadCount, timeAlloted);
+			}
+			catch(Exception e)
+			{
+				Log.Error(e);
+				return null;
+			}
+		}
+
+		private static int ResolveIterations(SimOptions options)
+		{
+			if(options.Iterations > 0)
+				return options.Iterations;
+			return Iterations;
+		}
+
+		private static int ResolveThreadCount(SimOptions options)
+		{
+			if(options.ThreadCount.HasValue && options.ThreadCount.Value > 0)
+				return options.ThreadCount.Value;
+			return ThreadCount;
+		}
+
+		private static int ResolveDefaultTimeAlloted(Input input)
+		{
+			var timeAlloted = MaxTime;
+
+			bool IsLeapfroggerCombo(IEnumerable<Minion>? side)
+			{
+				if(side == null)
+					return false;
+				var list = side.ToList();
+				return list.Count >= 3 && list.Any(x => x.CardID == NonCollectible.Neutral.Leapfrogger);
+			}
+
+			if(
+				IsLeapfroggerCombo(input.Player.Side) ||
+				IsLeapfroggerCombo(input.PlayerTeammate?.Side) ||
+				IsLeapfroggerCombo(input.Opponent.Side) ||
+				IsLeapfroggerCombo(input.OpponentTeammate?.Side)
+			)
+			{
+				timeAlloted = MaxTimeForLeapfrogger;
+			}
+			else if(input.Player.Side.Count >= 6 || input.Opponent.Side.Count >= 6)
+			{
+				timeAlloted = MaxTimeForComplexBoards;
+			}
+
+			return timeAlloted;
 		}
 
 		public void HandleNewAttackingEntity(Entity newAttacker)

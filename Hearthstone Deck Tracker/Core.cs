@@ -28,6 +28,7 @@ using Hearthstone_Deck_Tracker.Utility.Updating;
 using WPFLocalizeExtension.Engine;
 using Hearthstone_Deck_Tracker.Utility.Assets;
 using Hearthstone_Deck_Tracker.Utility.RemoteData;
+using Hearthstone_Deck_Tracker.Utility.LocalApi;
 using System.Linq;
 using System.Net.Http;
 using System.Windows.Interop;
@@ -195,6 +196,8 @@ namespace Hearthstone_Deck_Tracker
 			ResourceMonitor.Run();
 			Game.SecretsManager.OnSecretsChanged += cards => Overlay.ShowSecrets(cards);
 			MainWindow.Show();
+			Application.Current.Exit += (_, __) => BobsBuddyLocalApi.Stop();
+			BobsBuddyLocalApi.Start();
 			splashScreenWindow.Close();
 
 			if(Config.Instance.DisplayHsReplayNoteLive && ConfigManager.PreviousVersion != null && ConfigManager.PreviousVersion < new Version(1, 1, 0))
